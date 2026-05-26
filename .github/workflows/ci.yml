@@ -1,0 +1,56 @@
+name: CI
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+    branches: [main, master]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        go-version: ['1.22', '1.23']
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: ${{ matrix.go-version }}
+      - name: Download protobuf definitions
+        run: |
+          mkdir -p third_party/protobufs
+          git clone --depth 1 https://github.com/meshtastic/protobufs.git third_party/protobufs
+      - name: Generate Go protobuf code
+        run: |
+          apt-get update && apt-get install -y protobuf-compiler
+          go install google.golang.org/protobuf/cmd/protoc-gen-go@latest
+          export PATH=$PATH:$(go env GOPATH)/bin
+          cd third_party/protobufs
+          protoc --go_out=. --go_opt=paths=source_relative \
+            meshtastic/mesh.proto meshtastic/telemetry.proto \
+            meshtastic/portnums.proto meshtastic/config.proto \
+            meshtastic/deviceonly.proto meshtastic/localonly.proto \
+            meshtastic/nanopb.proto
+      - name: Build
+        run: go build ./...
+      - name: Test
+        run: go test -race ./...
+      - name: Benchmark
+        run: go test -bench=. -benchmem ./...
+      - name: Vet
+        run: go vet ./...
+      - name: Lint
+        uses: golangci/golangci-lint-action@v6
+        with:
+          version: latest
+          args: --timeout=5m
+
+  docker:
+    runs-on: ubuntu-latest
+    needs: test
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build Docker image
+        run: docker build -t faulty-link-backend:latest .
