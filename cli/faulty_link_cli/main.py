@@ -33,24 +33,74 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def _get(url: str) -> dict | None:
+    try:
+        resp = requests.get(url, timeout=10)
+        resp.raise_for_status()
+        return resp.json()
+    except requests.exceptions.ConnectionError:
+        print(f"error: could not connect to {url}", file=sys.stderr)
+        return None
+    except requests.exceptions.Timeout:
+        print(f"error: timeout connecting to {url}", file=sys.stderr)
+        return None
+    except requests.exceptions.HTTPError as e:
+        print(f"error: HTTP {e.response.status_code} from {url}", file=sys.stderr)
+        return None
+
+
 def cmd_health(args: argparse.Namespace) -> int:
     url = f"{args.base_url}/health"
-    # TODO: implement GET /health and pretty-print response
-    print(f"GET {url}")
-    return 0
+    data = _get(url)
+    if data is None:
+        return 1
+    status = data.get("status", "unknown")
+    print(f"bridge status: {status}")
+    return 0 if status == "ok" else 1
 
 
 def cmd_nodes(args: argparse.Namespace) -> int:
     url = f"{args.base_url}/api/v1/nodes"
-    # TODO: implement GET /api/v1/nodes and pretty-print response
-    print(f"GET {url}")
+    data = _get(url)
+    if data is None:
+        return 1
+    nodes = data.get("nodes", [])
+    if not nodes:
+        print("no nodes found")
+        return 0
+    print(f"{'node_id':<20} {'last_seen':<20} {'rssi'}")
+    print("-" * 50)
+    for node in nodes:
+        nid = node.get("node_id", "?")
+        seen = node.get("last_seen", "?")
+        rssi = node.get("rssi", "?")
+        print(f"{nid:<20} {seen:<20} {rssi}")
     return 0
 
 
 def cmd_telemetry(args: argparse.Namespace) -> int:
     url = f"{args.base_url}/api/v1/telemetry"
-    # TODO: implement GET /api/v1/telemetry and pretty-print response
-    print(f"GET {url}")
+    params = {}
+    if args.node_id:
+        params["node_id"] = args.node_id
+    try:
+        resp = requests.get(url, params=params, timeout=10)
+        resp.raise_for_status()
+        data = resp.json()
+    except requests.exceptions.RequestException as e:
+        print(f"error: {e}", file=sys.stderr)
+        return 1
+
+    telemetry_list = data.get("telemetry", [])
+    if not telemetry_list:
+        print("no telemetry found")
+        return 0
+
+    for t in telemetry_list:
+        nid = t.get("node_id", "?")
+        batt = t.get("battery_level", "?")
+        temp = t.get("temperature", "?")
+        print(f"node: {nid}  battery: {batt}%  temp: {temp}C")
     return 0
 
 
