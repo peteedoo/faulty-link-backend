@@ -3,6 +3,7 @@ package mesh
 
 import (
 	"context"
+	"encoding/binary"
 	"fmt"
 	"log"
 	"math/rand"
@@ -10,6 +11,9 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"google.golang.org/protobuf/proto"
+	meshpb "github.com/peteedoo/faulty-link-backend/third_party/protobufs/meshtastic"
 )
 
 // Client manages the TCP connection to a Meshtastic node with auto-reconnect.
@@ -218,9 +222,8 @@ func (c *Client) staleCheckLoop() {
 	}
 }
 
-// sendHeartbeat writes a minimal heartbeat frame to the connection.
-// For now this is a stub zero-length frame; real implementation will send
-// a ToRadio protobuf with want_config_id.
+// sendHeartbeat writes a ToRadio protobuf heartbeat frame to keep the
+// connection alive. Uses a random nonce per heartbeat.
 func (c *Client) sendHeartbeat() error {
 	c.connMu.RLock()
 	conn := c.conn
@@ -230,9 +233,23 @@ func (c *Client) sendHeartbeat() error {
 		return fmt.Errorf("no connection")
 	}
 
-	// Stub: write a single zero byte as heartbeat marker.
-	// TODO: replace with proper ToRadio protobuf heartbeat.
-	_, err := conn.Write([]byte{0x00})
+	// Build ToRadio with Heartbeat payload
+	hb := &meshpb.Heartbeat{Nonce: rand.Uint32()}
+	msg := &meshpb.ToRadio{
+		PayloadVariant: &meshpb.ToRadio_Heartbeat{Heartbeat: hb},
+	}
+
+	data, err := proto.Marshal(msg)
+	if err != nil {
+		return fmt.Errorf("marshal heartbeat: %w", err)
+	}
+
+	// Write length-delimited frame: varint length + protobuf data
+	frame := make([]byte, 0, binary.MaxVarintLen64+len(data))
+	frame = binary.AppendUvarint(frame, uint64(len(data)))
+	frame = append(frame, data...)
+
+	_, err = conn.Write(frame)
 	return err
 }
 
