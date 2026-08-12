@@ -1,0 +1,12 @@
+poll_interval_seconds: 5
+offline_threshold_seconds: 15
+nodes:
+  - node_id: "!000000a1"
+    name: gateway-1
+    role: gateway
+  - node_id: "!000000a2"
+    name: repeater-1
+    role: repeater
+  - node_id: "!000000a3"
+    name: handset-1
+    role: handset

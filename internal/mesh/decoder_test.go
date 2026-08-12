@@ -2,7 +2,6 @@ package mesh
 
 import (
 	"bytes"
-	"encoding/binary"
 	"testing"
 
 	"google.golang.org/protobuf/proto"
@@ -10,11 +9,14 @@ import (
 	meshpb "github.com/peteedoo/faulty-link-backend/third_party/protobufs/meshtastic"
 )
 
+// makeFramed wraps a payload in the real Meshtastic stream frame:
+// [0x94][0xc3][len_hi][len_lo][payload].
 func makeFramed(payload []byte) []byte {
 	var buf bytes.Buffer
-	varintBuf := make([]byte, binary.MaxVarintLen64)
-	n := binary.PutUvarint(varintBuf, uint64(len(payload)))
-	buf.Write(varintBuf[:n])
+	buf.WriteByte(0x94)
+	buf.WriteByte(0xc3)
+	buf.WriteByte(byte(len(payload) >> 8))
+	buf.WriteByte(byte(len(payload)))
 	buf.Write(payload)
 	return buf.Bytes()
 }

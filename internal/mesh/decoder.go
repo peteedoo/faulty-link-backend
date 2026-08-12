@@ -3,7 +3,6 @@ package mesh
 
 import (
 	"bufio"
-	"encoding/binary"
 	"errors"
 	"fmt"
 	"io"
@@ -14,8 +13,17 @@ import (
 	meshpb "github.com/peteedoo/faulty-link-backend/third_party/protobufs/meshtastic"
 )
 
-// Decoder reads length-delimited protobuf messages from an io.Reader.
-// Meshtastic TCP framing: [varint length] [protobuf payload]
+// Meshtastic stream framing constants (serial + TCP 4403). Each packet is
+// prefixed with [START1][START2][len_hi][len_lo]: a 4-byte header where the
+// payload length is a 16-bit big-endian integer, max 512 bytes.
+const (
+	start1   = 0x94
+	start2   = 0xc3
+	maxFrame = 512
+)
+
+// Decoder reads Meshtastic stream-framed protobuf messages from an io.Reader.
+// Framing: [0x94][0xc3][len_hi][len_lo] [protobuf payload].
 type Decoder struct {
 	r      *bufio.Reader
 	maxLen int
@@ -35,25 +43,48 @@ func NewDecoder(r io.Reader, maxLen int) *Decoder {
 	}
 }
 
-// Decode reads the next length-delimited message and returns the raw payload.
-// This is the low-level framing layer; higher-level code will unmarshal protobuf.
+// Decode reads the next stream-framed message and returns the raw protobuf
+// payload. It syncs to the START1/START2 magic sequence, skipping any leading
+// bytes that don't match, so it can recover after a partial or garbage frame.
 func (d *Decoder) Decode() ([]byte, error) {
-	// Read varint length prefix
-	length, err := binary.ReadUvarint(d.r)
-	if err != nil {
-		return nil, fmt.Errorf("read length prefix: %w", err)
+	// Sync to the START1/START2 magic sequence.
+	for {
+		b, err := d.r.ReadByte()
+		if err != nil {
+			return nil, fmt.Errorf("read start1: %w", err)
+		}
+		if b != start1 {
+			continue
+		}
+		b, err = d.r.ReadByte()
+		if err != nil {
+			return nil, fmt.Errorf("read start2: %w", err)
+		}
+		if b == start2 {
+			break
+		}
+		// Not start2; if it's another start1, rewind so it's re-examined as the
+		// potential start of a new frame.
+		if b == start1 {
+			_ = d.r.UnreadByte()
+		}
 	}
+
+	// Read the 16-bit big-endian payload length.
+	var hdr [2]byte
+	if _, err := io.ReadFull(d.r, hdr[:]); err != nil {
+		return nil, fmt.Errorf("read length: %w", err)
+	}
+	length := int(hdr[0])<<8 | int(hdr[1])
 	if length == 0 {
 		return []byte{}, nil
 	}
-	if length > uint64(d.maxLen) {
+	if length > d.maxLen || length > maxFrame {
 		return nil, ErrOversizedMessage
 	}
 
-	// Read payload
 	payload := make([]byte, length)
-	_, err = io.ReadFull(d.r, payload)
-	if err != nil {
+	if _, err := io.ReadFull(d.r, payload); err != nil {
 		return nil, fmt.Errorf("read payload (%d bytes): %w", length, err)
 	}
 	return payload, nil

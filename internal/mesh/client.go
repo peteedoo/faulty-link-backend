@@ -3,7 +3,6 @@ package mesh
 
 import (
 	"context"
-	"encoding/binary"
 	"fmt"
 	"log"
 	"math/rand"
@@ -12,8 +11,8 @@ import (
 	"sync/atomic"
 	"time"
 
-	"google.golang.org/protobuf/proto"
 	meshpb "github.com/peteedoo/faulty-link-backend/third_party/protobufs/meshtastic"
+	"google.golang.org/protobuf/proto"
 )
 
 // Client manages the TCP connection to a Meshtastic node with auto-reconnect.
@@ -244,9 +243,9 @@ func (c *Client) sendHeartbeat() error {
 		return fmt.Errorf("marshal heartbeat: %w", err)
 	}
 
-	// Write length-delimited frame: varint length + protobuf data
-	frame := make([]byte, 0, binary.MaxVarintLen64+len(data))
-	frame = binary.AppendUvarint(frame, uint64(len(data)))
+	// Write Meshtastic stream frame: [START1][START2][len_hi][len_lo][payload].
+	frame := make([]byte, 0, 4+len(data))
+	frame = append(frame, start1, start2, byte(len(data)>>8), byte(len(data)))
 	frame = append(frame, data...)
 
 	_, err = conn.Write(frame)

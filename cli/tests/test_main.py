@@ -13,6 +13,9 @@ from faulty_link_cli.main import (
     cmd_nodes,
     cmd_telemetry,
     _get,
+    _parse_last_heard,
+    _compute_status_and_age,
+    cmd_monitor,
 )
 
 
@@ -222,3 +225,222 @@ def test_build_parser_subcommands():
     # telemetry with --node-id
     args = parser.parse_args(["telemetry", "--node-id", "!abc"])
     assert args.node_id == "!abc"
+
+
+# ---------------------------------------------------------------------------
+# Monitor subcommand tests
+# ---------------------------------------------------------------------------
+
+import datetime
+import tempfile
+import os
+
+
+BASELINE_YAML = """
+poll_interval_seconds: 5
+offline_threshold_seconds: 15
+nodes:
+  - node_id: "!000000a1"
+    name: gateway-1
+    role: gateway
+  - node_id: "!000000a2"
+    name: repeater-1
+    role: repeater
+  - node_id: "!000000a3"
+    name: handset-1
+    role: handset
+"""
+
+
+def _write_baseline(tmpdir: str) -> str:
+    path = os.path.join(tmpdir, "baseline.yaml")
+    with open(path, "w") as fh:
+        fh.write(BASELINE_YAML)
+    return path
+
+
+@patch("faulty_link_cli.main._get")
+def test_cmd_monitor_all_up(mock_get, capsys, tmp_path):
+    now = datetime.datetime.now(datetime.timezone.utc)
+    mock_get.return_value = {
+        "nodes": [
+            {"node_id": "!000000a1", "last_heard": now.isoformat().replace("+00:00", "Z")},
+            {"node_id": "!000000a2", "last_heard": now.isoformat().replace("+00:00", "Z")},
+            {"node_id": "!000000a3", "last_heard": now.isoformat().replace("+00:00", "Z")},
+        ]
+    }
+    baseline_path = _write_baseline(str(tmp_path))
+    args = make_args(baseline=baseline_path, once=True)
+    assert cmd_monitor(args) == 0
+    captured = capsys.readouterr()
+    assert "gateway-1" in captured.out
+    assert "repeater-1" in captured.out
+    assert "handset-1" in captured.out
+    assert "OK" in captured.out
+
+
+@patch("faulty_link_cli.main._get")
+def test_cmd_monitor_down_by_absence(mock_get, capsys, tmp_path):
+    now = datetime.datetime.now(datetime.timezone.utc)
+    mock_get.return_value = {
+        "nodes": [
+            {"node_id": "!000000a1", "last_heard": now.isoformat().replace("+00:00", "Z")},
+            # repeater-1 absent
+            {"node_id": "!000000a3", "last_heard": now.isoformat().replace("+00:00", "Z")},
+        ]
+    }
+    baseline_path = _write_baseline(str(tmp_path))
+    args = make_args(baseline=baseline_path, once=True)
+    assert cmd_monitor(args) == 1
+    captured = capsys.readouterr()
+    assert "DOWN" in captured.out
+    assert "repeater-1" in captured.out
+
+
+@patch("faulty_link_cli.main._get")
+def test_cmd_monitor_down_by_staleness(mock_get, capsys, tmp_path):
+    now = datetime.datetime.now(datetime.timezone.utc)
+    old = (now - datetime.timedelta(seconds=30)).isoformat().replace("+00:00", "Z")
+    mock_get.return_value = {
+        "nodes": [
+            {"node_id": "!000000a1", "last_heard": old},
+            {"node_id": "!000000a2", "last_heard": old},
+            {"node_id": "!000000a3", "last_heard": old},
+        ]
+    }
+    baseline_path = _write_baseline(str(tmp_path))
+    args = make_args(baseline=baseline_path, once=True)
+    assert cmd_monitor(args) == 1
+    captured = capsys.readouterr()
+    assert "DOWN" in captured.out
+
+
+@patch("faulty_link_cli.main._get")
+def test_cmd_monitor_age_computation(mock_get, capsys, tmp_path):
+    now = datetime.datetime.now(datetime.timezone.utc)
+    age_10 = (now - datetime.timedelta(seconds=10)).isoformat().replace("+00:00", "Z")
+    age_20 = (now - datetime.timedelta(seconds=20)).isoformat().replace("+00:00", "Z")
+    mock_get.return_value = {
+        "nodes": [
+            {"node_id": "!000000a1", "last_heard": age_10},
+            {"node_id": "!000000a2", "last_heard": age_20},
+            {"node_id": "!000000a3", "last_heard": "0001-01-01T00:00:00Z"},
+        ]
+    }
+    baseline_path = _write_baseline(str(tmp_path))
+    args = make_args(baseline=baseline_path, once=True)
+    assert cmd_monitor(args) == 1
+    captured = capsys.readouterr()
+    out = captured.out
+    # gateway-1 age ~10s -> OK
+    assert "gateway-1" in out
+    # repeater-1 age ~20s -> DOWN
+    assert "repeater-1" in out
+    # handset-1 zero-time -> DOWN
+    assert "handset-1" in out
+    assert out.count("DOWN") == 2
+    assert out.count("OK") == 1
+
+
+def test_cmd_monitor_alert_on_transition(capsys, tmp_path):
+    """OK -> DOWN transition emits alert line with bell."""
+    from unittest.mock import patch
+    now = datetime.datetime.now(datetime.timezone.utc)
+    fresh = now.isoformat().replace("+00:00", "Z")
+    stale = (now - datetime.timedelta(seconds=30)).isoformat().replace("+00:00", "Z")
+
+    baseline_path = _write_baseline(str(tmp_path))
+    args = make_args(baseline=baseline_path, once=False)
+
+    poll1 = {
+        "nodes": [
+            {"node_id": "!000000a1", "last_heard": fresh},
+            {"node_id": "!000000a2", "last_heard": fresh},
+            {"node_id": "!000000a3", "last_heard": fresh},
+        ]
+    }
+    poll2 = {
+        "nodes": [
+            {"node_id": "!000000a1", "last_heard": stale},
+            {"node_id": "!000000a2", "last_heard": fresh},
+            {"node_id": "!000000a3", "last_heard": fresh},
+        ]
+    }
+
+    with patch("faulty_link_cli.main._get", side_effect=[poll1, poll2]) as mock_get:
+        with patch("faulty_link_cli.main.time.sleep", side_effect=[None, Exception("break")]):
+            try:
+                cmd_monitor(args)
+            except Exception:
+                pass
+
+    captured = capsys.readouterr()
+    # No alert on first poll, then alert on second
+    assert "ALERT" in captured.out
+    assert "gateway-1" in captured.out
+    assert "\a" in captured.out
+
+
+@patch("faulty_link_cli.main._get")
+def test_cmd_monitor_request_failure(mock_get, capsys, tmp_path):
+    mock_get.return_value = None
+    baseline_path = _write_baseline(str(tmp_path))
+    args = make_args(baseline=baseline_path, once=True)
+    assert cmd_monitor(args) == 1
+
+
+# ---------------------------------------------------------------------------
+# _parse_last_heard unit tests
+# ---------------------------------------------------------------------------
+
+def test_parse_last_heard_zero_time():
+    dt = _parse_last_heard("0001-01-01T00:00:00Z")
+    assert dt == datetime.datetime.min.replace(tzinfo=datetime.timezone.utc)
+
+
+def test_parse_last_heard_normal():
+    dt = _parse_last_heard("2026-06-24T12:00:00Z")
+    expected = datetime.datetime(2026, 6, 24, 12, 0, 0, tzinfo=datetime.timezone.utc)
+    assert dt == expected
+
+
+# ---------------------------------------------------------------------------
+# _compute_status_and_age unit tests
+# ---------------------------------------------------------------------------
+
+def test_compute_status_and_age_ok():
+    now = datetime.datetime.now(datetime.timezone.utc)
+    baseline_node = {"node_id": "!000000a1"}
+    live_nodes = {"!000000a1": {"last_heard": now.isoformat().replace("+00:00", "Z")}}
+    status, age = _compute_status_and_age(baseline_node, live_nodes, now, 15)
+    assert status == "OK"
+    assert age == 0
+
+
+def test_compute_status_and_age_down_by_absence():
+    now = datetime.datetime.now(datetime.timezone.utc)
+    baseline_node = {"node_id": "!000000a1"}
+    live_nodes = {}
+    status, age = _compute_status_and_age(baseline_node, live_nodes, now, 15)
+    assert status == "DOWN"
+    assert age == -1
+
+
+def test_compute_status_and_age_down_by_staleness():
+    now = datetime.datetime.now(datetime.timezone.utc)
+    old = now - datetime.timedelta(seconds=30)
+    baseline_node = {"node_id": "!000000a1"}
+    live_nodes = {"!000000a1": {"last_heard": old.isoformat().replace("+00:00", "Z")}}
+    status, age = _compute_status_and_age(baseline_node, live_nodes, now, 15)
+    assert status == "DOWN"
+    assert age == 30
+
+
+def test_compute_status_and_age_never_heard():
+    now = datetime.datetime.now(datetime.timezone.utc)
+    baseline_node = {"node_id": "!000000a1"}
+    live_nodes = {"!000000a1": {"last_heard": "0001-01-01T00:00:00Z"}}
+    status, age = _compute_status_and_age(baseline_node, live_nodes, now, 15)
+    assert status == "DOWN"
+    # age will be huge but positive
+    assert age > 0
