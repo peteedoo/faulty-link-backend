@@ -32,4 +32,3 @@ env/
 # OS
 .DS_Store
 Thumbs.db
-third_party/protobufs/

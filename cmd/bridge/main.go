@@ -17,9 +17,10 @@ import (
 func main() {
 	meshAddr := getEnv("MESH_ADDR", "localhost:4403")
 	httpAddr := getEnv("HTTP_ADDR", ":8080")
+	ttl := getDuration("MESH_TTL", 10*time.Minute)
 
-	// Initialize the in-memory store with a 10-minute TTL.
-	store := mesh.NewStore(10 * time.Minute)
+	// Initialize the in-memory store with the configured node TTL.
+	store := mesh.NewStore(ttl)
 	defer store.Close()
 
 	// Initialize the Meshtastic TCP client.
@@ -58,6 +59,16 @@ func main() {
 func getEnv(key, fallback string) string {
 	if v := os.Getenv(key); v != "" {
 		return v
+	}
+	return fallback
+}
+
+func getDuration(key string, fallback time.Duration) time.Duration {
+	if v := os.Getenv(key); v != "" {
+		if d, err := time.ParseDuration(v); err == nil {
+			return d
+		}
+		log.Printf("bad duration %s=%q, using %v", key, v, fallback)
 	}
 	return fallback
 }

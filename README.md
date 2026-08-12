@@ -4,6 +4,31 @@
 
 This project is part of a portfolio narrative: **Self-healing homelab infrastructure with intelligent mesh-network backend**. It pairs with [`homelab-monitor`](https://github.com/peteedoo/homelab-monitor), a Python CLI that keeps the Docker/system stack healthy.
 
+## Quickstart — full stack with no LoRa hardware
+
+The repo ships a **mesh simulator** (`cmd/meshsim`) that emits real `[varint length][FromRadio]` protobuf frames over TCP, so you can run the entire Phase-1 stack (simulator → bridge → CLI monitor) on one machine and watch a node go offline:
+
+```bash
+scripts/demo.sh
+```
+
+This builds the bridge + simulator, starts 3 virtual nodes (gateway/repeater/handset), drops the handset after ~18s, and runs the CLI monitor — which flips the handset to a red **DOWN** with a terminal bell.
+
+Run the pieces by hand:
+
+```bash
+# 1. Simulator — 3 nodes, optionally drop one to test offline detection
+SIM_DROP_NODE=a3 SIM_DROP_AFTER=15s go run ./cmd/meshsim          # listens :4403
+
+# 2. Bridge — connects to the sim, serves REST on :8080
+MESH_ADDR=localhost:4403 MESH_TTL=60s go run ./cmd/bridge
+
+# 3. Monitor — polls the bridge, alerts when a baselined node drops
+cd cli && python -m faulty_link_cli.main monitor --baseline baseline.yaml
+```
+
+A baselined node is reported **DOWN** when it is absent from `/api/v1/nodes` **or** its `last_heard` is older than `offline_threshold_seconds` (see `cli/baseline.yaml`). `monitor --once` does a single poll and exits non-zero if any node is down (CI-friendly).
+
 ## Architecture
 
 ```
