@@ -1,0 +1,15 @@
+#!/bin/sh
+# Run go fmt and go vet on staged Go files
+STAGED=$(git diff --cached --name-only --diff-filter=ACM | grep '\.go$')
+if [ -z "$STAGED" ]; then
+  exit 0
+fi
+echo "Running go fmt..."
+go fmt ./...
+echo "Running go vet..."
+go vet ./...
+if [ $? -ne 0 ]; then
+  echo "go vet failed — fix issues before committing"
+  exit 1
+fi
+echo "Pre-commit checks passed."
