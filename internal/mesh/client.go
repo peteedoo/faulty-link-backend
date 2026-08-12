@@ -131,8 +131,12 @@ func (c *Client) dial() error {
 
 	// Enable TCP keepalive
 	if tcpConn, ok := conn.(*net.TCPConn); ok {
-		tcpConn.SetKeepAlive(true)
-		tcpConn.SetKeepAlivePeriod(3 * time.Minute)
+		if err := tcpConn.SetKeepAlive(true); err != nil {
+			return fmt.Errorf("failed to set keepalive: %w", err)
+		}
+		if err := tcpConn.SetKeepAlivePeriod(3 * time.Minute); err != nil {
+			return fmt.Errorf("failed to set keepalive period: %w", err)
+		}
 	}
 
 	c.connMu.Lock()
