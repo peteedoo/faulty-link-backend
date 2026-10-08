@@ -1,0 +1,7 @@
+version: "2"
+
+linters:
+  exclusions:
+    # golangci-lint v1 excluded unchecked Close/Flush/print errors by default (EXC0001); v2 needs this preset.
+    presets:
+      - std-error-handling
